@@ -4,13 +4,14 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path"
 )
 
 func check(e error) {
 	if e != nil {
-		panic(e)
+		log.Fatal(e)
 	}
 }
 
@@ -36,7 +37,5 @@ func main() {
 	}
 
 	check(scanner.Err())
-
-	// fmt.Println("Hello", loc)
 	fmt.Println(url, len(url))
 }
