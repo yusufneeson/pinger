@@ -5,14 +5,30 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path"
+	"strings"
 )
 
 func check(e error) {
 	if e != nil {
 		log.Fatal(e)
 	}
+}
+
+func get(url string) string {
+	resp, e := http.Get(url)
+	if e != nil {
+		// log.Fatal(e)
+		return "FAIL ___   " + url + " (" + e.Error() + ") "
+	}
+
+	defer resp.Body.Close()
+
+	sts := strings.Split(resp.Status, " ")
+
+	return sts[1] + "   " + sts[0] + "   " + url
 }
 
 func main() {
@@ -37,5 +53,10 @@ func main() {
 	}
 
 	check(scanner.Err())
-	fmt.Println(url, len(url))
+
+	for _, u := range url {
+		resp := get(u)
+		fmt.Println(resp)
+	}
+
 }
