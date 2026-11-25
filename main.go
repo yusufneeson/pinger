@@ -2,13 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path"
-	"strings"
 	"sync"
 	"time"
 )
@@ -16,8 +16,9 @@ import (
 type ResultUrl struct {
 	url    string
 	status string
-	code   int8
-	time   int
+	code   int
+	time   int64
+	error  string
 }
 
 func check(e error) {
@@ -26,24 +27,33 @@ func check(e error) {
 	}
 }
 
-func checkUrl(url string) string {
-	resp, e := http.Head(url)
+func checkUrl(parentContext context.Context, client *http.Client, url string, timeout int) ResultUrl {
+
+	ctx, cancel := context.WithTimeout(parentContext, time.Duration(timeout*int(time.Second)))
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	start := time.Now()
+	resp, e := client.Do(req)
+	elapsed := time.Since(start)
 	if e != nil {
-		// log.Fatal(e)
-		return "FAIL ___   " + url + " (" + e.Error() + ") "
+		return ResultUrl{url: url, status: "FAIL", code: 0, time: elapsed.Milliseconds(), error: e.Error()}
 	}
 
 	defer resp.Body.Close()
 
-	sts := strings.Split(resp.Status, " ")
-
-	return sts[1] + "   " + sts[0] + "   " + url
+	return ResultUrl{url: url, code: resp.StatusCode, status: http.StatusText(resp.StatusCode), time: elapsed.Milliseconds()}
 }
 
 func main() {
 	file := flag.String("f", "", "File with list of urls")
 	workers := flag.Int("workers", 3, "Total workers, default is 3")
-	fmt.Printf("with %d workers\n", *workers)
+	timeout := flag.Int("timeout", 3, "Max timeout of http request, default is 3second")
+
 	flag.Parse()
 
 	if flag.NFlag() < 1 {
@@ -67,7 +77,7 @@ func main() {
 	check(scanner.Err())
 
 	jobs := make(chan string, len(url))
-	result := make(chan string)
+	result := make(chan ResultUrl)
 
 	for _, targetUrl := range url {
 		jobs <- targetUrl
@@ -79,7 +89,9 @@ func main() {
 	for i := 1; i <= *workers; i++ {
 		wg.Go(func() {
 			for url := range jobs {
-				res := checkUrl(url)
+				ctx := context.Background()
+				client := &http.Client{Timeout: time.Duration(*timeout) * time.Second}
+				res := checkUrl(ctx, client, url, *timeout)
 				result <- res
 			}
 		})
