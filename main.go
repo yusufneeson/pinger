@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-type ResultUrl struct {
+type Result struct {
 	url    string
 	status string
 	code   int
@@ -34,8 +34,7 @@ func main() {
 	}
 }
 
-func checkUrl(parentContext context.Context, client *http.Client, url string, timeout time.Duration) ResultUrl {
-
+func checkUrl(parentContext context.Context, client *http.Client, url string, timeout time.Duration) Result {
 	ctx, cancel := context.WithTimeout(parentContext, timeout)
 	defer cancel()
 
@@ -48,12 +47,12 @@ func checkUrl(parentContext context.Context, client *http.Client, url string, ti
 	resp, e := client.Do(req)
 	elapsed := time.Since(start)
 	if e != nil {
-		return ResultUrl{url: url, status: "FAIL", code: 0, time: elapsed.Milliseconds(), error: e.Error()}
+		return Result{url: url, status: "FAIL", code: 0, time: elapsed.Milliseconds(), error: e.Error()}
 	}
 
 	defer resp.Body.Close()
 
-	return ResultUrl{url: url, code: resp.StatusCode, status: http.StatusText(resp.StatusCode), time: elapsed.Milliseconds()}
+	return Result{url: url, code: resp.StatusCode, status: http.StatusText(resp.StatusCode), time: elapsed.Milliseconds()}
 }
 
 func readUrl(path string) ([]string, error) {
@@ -71,6 +70,31 @@ func readUrl(path string) ([]string, error) {
 	}
 
 	return url, scanner.Err()
+}
+
+func worker(ctx context.Context, url []string, workers int, timeout time.Duration) []Result {
+	jobs := make(chan Job)
+	results := make([]Result, len(url))
+
+	client := &http.Client{}
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for j := range jobs {
+				results[j.id] = checkUrl(ctx, client, j.url, timeout)
+			}
+		})
+	}
+
+	for i, u := range url {
+		jobs <- Job{i, u}
+	}
+
+	close(jobs)
+	wg.Wait()
+
+	return results
 }
 
 func run() error {
@@ -94,36 +118,19 @@ func run() error {
 		return e
 	}
 
-	jobs := make(chan Job, len(url))
-	results := make([]ResultUrl, len(url))
+	// -- time calculation: start --
+	ts := time.Now()
 
-	for i, u := range url {
-		jobs <- Job{id: i, url: u}
-	}
-	close(jobs)
-
-	var wg sync.WaitGroup
-
-	client := &http.Client{}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	for i := 1; i <= *workers; i++ {
-		wg.Go(func() {
-			for j := range jobs {
-				res := checkUrl(ctx, client, j.url, *timeout)
-				results[j.id] = res
-			}
-		})
-	}
-
-	ts := time.Now()
-	wg.Wait()
+	results := worker(ctx, url, *workers, *timeout)
 
 	for _, r := range results {
 		fmt.Println(r)
 	}
 
+	// -- time calculation: end --
 	elapsed := time.Since(ts)
 	fmt.Println(elapsed)
 
