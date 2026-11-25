@@ -28,9 +28,9 @@ func check(e error) {
 	}
 }
 
-func checkUrl(parentContext context.Context, client *http.Client, url string, timeout int) ResultUrl {
+func checkUrl(parentContext context.Context, client *http.Client, url string, timeout time.Duration) ResultUrl {
 
-	ctx, cancel := context.WithTimeout(parentContext, time.Duration(timeout*int(time.Second)))
+	ctx, cancel := context.WithTimeout(parentContext, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
@@ -53,7 +53,7 @@ func checkUrl(parentContext context.Context, client *http.Client, url string, ti
 func main() {
 	file := flag.String("f", "", "File with list of urls")
 	workers := flag.Int("workers", 3, "Total workers, default is 3")
-	timeout := flag.Int("timeout", 3, "Max timeout of http request, default is 3second")
+	timeout := flag.Duration("timeout", 3*time.Second, "Max timeout of http request, default is 3s")
 
 	flag.Parse()
 
