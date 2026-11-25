@@ -1,2 +1,6 @@
+https://httpbin.org/delay/3
 https://ysf.my.id
 https://google.com
+https://httpbin.org/delay/10
+https://youtube.com
+https://instagram.com
