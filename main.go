@@ -22,6 +22,11 @@ type ResultUrl struct {
 	error  string
 }
 
+type Job struct {
+	id  int
+	url string
+}
+
 func check(e error) {
 	if e != nil {
 		log.Fatal(e)
@@ -77,11 +82,11 @@ func main() {
 
 	check(scanner.Err())
 
-	jobs := make(chan string, len(url))
-	result := make(chan ResultUrl)
+	jobs := make(chan Job, len(url))
+	results := make([]ResultUrl, len(url))
 
-	for _, targetUrl := range url {
-		jobs <- targetUrl
+	for i, u := range url {
+		jobs <- Job{id: i, url: u}
 	}
 	close(jobs)
 
@@ -93,21 +98,17 @@ func main() {
 
 	for i := 1; i <= *workers; i++ {
 		wg.Go(func() {
-			for url := range jobs {
-				res := checkUrl(ctx, client, url, *timeout)
-				result <- res
+			for j := range jobs {
+				res := checkUrl(ctx, client, j.url, *timeout)
+				results[j.id] = res
 			}
 		})
 	}
 
 	ts := time.Now()
+	wg.Wait()
 
-	go func() {
-		wg.Wait()
-		close(result)
-	}()
-
-	for r := range result {
+	for _, r := range results {
 		fmt.Println(r)
 	}
 
