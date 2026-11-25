@@ -9,7 +9,16 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
+	"time"
 )
+
+type ResultUrl struct {
+	url    string
+	status string
+	code   int8
+	time   int
+}
 
 func check(e error) {
 	if e != nil {
@@ -17,8 +26,8 @@ func check(e error) {
 	}
 }
 
-func get(url string) string {
-	resp, e := http.Get(url)
+func checkUrl(url string) string {
+	resp, e := http.Head(url)
 	if e != nil {
 		// log.Fatal(e)
 		return "FAIL ___   " + url + " (" + e.Error() + ") "
@@ -32,11 +41,13 @@ func get(url string) string {
 }
 
 func main() {
-	file := flag.String("url", "", "File with list of urls")
+	file := flag.String("f", "", "File with list of urls")
+	workers := flag.Int("workers", 3, "Total workers, default is 3")
+	fmt.Printf("with %d workers\n", *workers)
 	flag.Parse()
 
 	if flag.NFlag() < 1 {
-		fmt.Println("Use with -url file.txt")
+		fmt.Println("Use with -f file.txt")
 		return
 	}
 	loc := path.Join(path.Dir(*file), path.Base(*file))
@@ -46,6 +57,7 @@ func main() {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+
 	var url []string
 
 	for scanner.Scan() {
@@ -54,9 +66,36 @@ func main() {
 
 	check(scanner.Err())
 
-	for _, u := range url {
-		resp := get(u)
-		fmt.Println(resp)
+	jobs := make(chan string, len(url))
+	result := make(chan string)
+
+	for _, targetUrl := range url {
+		jobs <- targetUrl
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+
+	for i := 1; i <= *workers; i++ {
+		wg.Go(func() {
+			for url := range jobs {
+				res := checkUrl(url)
+				result <- res
+			}
+		})
 	}
 
+	ts := time.Now()
+
+	go func() {
+		wg.Wait()
+		close(result)
+	}()
+
+	for r := range result {
+		fmt.Println(r)
+	}
+
+	elapsed := time.Since(ts)
+	fmt.Println(elapsed)
 }
