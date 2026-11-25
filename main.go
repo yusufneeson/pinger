@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"sync"
 	"time"
@@ -86,11 +87,13 @@ func main() {
 
 	var wg sync.WaitGroup
 
+	client := &http.Client{}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	for i := 1; i <= *workers; i++ {
 		wg.Go(func() {
 			for url := range jobs {
-				ctx := context.Background()
-				client := &http.Client{Timeout: time.Duration(*timeout) * time.Second}
 				res := checkUrl(ctx, client, url, *timeout)
 				result <- res
 			}
