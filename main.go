@@ -3,13 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"sync"
 	"time"
 )
@@ -27,9 +27,10 @@ type Job struct {
 	url string
 }
 
-func check(e error) {
-	if e != nil {
-		log.Fatal(e)
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "pinger:", err)
+		os.Exit(1)
 	}
 }
 
@@ -55,32 +56,43 @@ func checkUrl(parentContext context.Context, client *http.Client, url string, ti
 	return ResultUrl{url: url, code: resp.StatusCode, status: http.StatusText(resp.StatusCode), time: elapsed.Milliseconds()}
 }
 
-func main() {
-	file := flag.String("f", "", "File with list of urls")
-	workers := flag.Int("workers", 3, "Total workers, default is 3")
-	timeout := flag.Duration("timeout", 3*time.Second, "Max timeout of http request, default is 3s")
-
-	flag.Parse()
-
-	if flag.NFlag() < 1 {
-		fmt.Println("Use with -f file.txt")
-		return
+func readUrl(path string) ([]string, error) {
+	var url []string
+	f, err := os.Open(path)
+	if err != nil {
+		return url, err
 	}
-	loc := path.Join(path.Dir(*file), path.Base(*file))
 
-	f, err := os.Open(loc)
-	check(err)
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-
-	var url []string
-
 	for scanner.Scan() {
 		url = append(url, scanner.Text())
 	}
 
-	check(scanner.Err())
+	return url, scanner.Err()
+}
+
+func run() error {
+	file := flag.String("f", "", "File with list of urls")
+	workers := flag.Int("workers", 3, "Total workers, default is 3")
+	timeout := flag.Duration("timeout", 3*time.Second, "Max timeout of http request, default is 3s")
+	flag.Parse()
+
+	if *file == "" {
+		flag.Usage()
+		return errors.New("-f file not found!")
+	}
+
+	if *workers < 1 {
+		flag.Usage()
+		return errors.New("-worker minimal 1")
+	}
+
+	url, e := readUrl(*file)
+	if e != nil {
+		return e
+	}
 
 	jobs := make(chan Job, len(url))
 	results := make([]ResultUrl, len(url))
@@ -114,4 +126,6 @@ func main() {
 
 	elapsed := time.Since(ts)
 	fmt.Println(elapsed)
+
+	return nil
 }
