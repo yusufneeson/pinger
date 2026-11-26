@@ -6,89 +6,81 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
+	"text/tabwriter"
 	"time"
 )
 
 type Result struct {
-	url    string
-	status string
-	code   int
-	time   time.Duration
-	error  error
+	URL      string
+	Code     int
+	Duration time.Duration
+	Err      error
 }
 
+func (r Result) OK() bool { return r.Err == nil && r.Code < 400 }
+
+func (r Result) Status() string {
+	if r.Err != nil {
+		return "FAIL"
+	} else {
+		return "OK"
+	}
+}
+
+func (r Result) CodeText() string {
+	if r.Code == 0 {
+		return "---"
+	}
+
+	return strconv.Itoa(r.Code)
+}
+
+func (r Result) Note() string {
+	var dnsErr *net.DNSError
+	switch {
+	case r.Err == nil:
+		return ""
+	case errors.Is(r.Err, context.DeadlineExceeded):
+		return "(timeout)"
+	case errors.As(r.Err, &dnsErr):
+		return "(DNS error: " + dnsErr.Err + ")"
+	default:
+		return "(" + r.Err.Error() + ")"
+	}
+}
+
+func checkUrl(parentContext context.Context, client *http.Client, url string, timeout time.Duration) Result {
+	ctx, cancel := context.WithTimeout(parentContext, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return Result{URL: url, Err: err}
+	}
+
+	start := time.Now()
+	resp, e := client.Do(req)
+	elapsed := time.Since(start)
+	if e != nil {
+		return Result{URL: url, Duration: elapsed, Err: e}
+	}
+
+	defer resp.Body.Close()
+
+	return Result{URL: url, Code: resp.StatusCode, Duration: elapsed}
+}
+
+// -- worker pool --
 type Job struct {
 	id  int
 	url string
-}
-
-// -- I/O --
-func readUrl(path string) ([]string, error) {
-	var url []string
-	f, err := os.Open(path)
-	if err != nil {
-		return url, err
-	}
-
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		url = append(url, scanner.Text())
-	}
-
-	return url, scanner.Err()
-}
-
-func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "pinger:", err)
-		os.Exit(1)
-	}
-}
-
-func run() error {
-	file := flag.String("f", "", "File with list of urls")
-	workers := flag.Int("workers", 3, "Total workers, default is 3")
-	timeout := flag.Duration("timeout", 3*time.Second, "Max timeout of http request, default is 3s")
-	flag.Parse()
-
-	if *file == "" {
-		flag.Usage()
-		return errors.New("-f file not found!")
-	}
-
-	if *workers < 1 {
-		flag.Usage()
-		return errors.New("-worker minimal 1")
-	}
-
-	url, e := readUrl(*file)
-	if e != nil {
-		return e
-	}
-
-	// -- time calculation: start --
-	ts := time.Now()
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
-	results := worker(ctx, url, *workers, *timeout)
-
-	for _, r := range results {
-		fmt.Println(r)
-	}
-
-	// -- time calculation: end --
-	elapsed := time.Since(ts)
-	fmt.Println(elapsed)
-
-	return nil
 }
 
 func worker(ctx context.Context, url []string, workers int, timeout time.Duration) []Result {
@@ -116,23 +108,73 @@ func worker(ctx context.Context, url []string, workers int, timeout time.Duratio
 	return results
 }
 
-func checkUrl(parentContext context.Context, client *http.Client, url string, timeout time.Duration) Result {
-	ctx, cancel := context.WithTimeout(parentContext, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+// -- I/O --
+func readUrl(path string) ([]string, error) {
+	var url []string
+	f, err := os.Open(path)
 	if err != nil {
-		return Result{url: url, status: "FAIL", error: err}
+		return url, err
 	}
 
-	start := time.Now()
-	resp, e := client.Do(req)
-	elapsed := time.Since(start)
-	if e != nil {
-		return Result{url: url, status: "FAIL", time: elapsed, error: e}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		url = append(url, scanner.Text())
 	}
 
-	defer resp.Body.Close()
+	return url, scanner.Err()
+}
 
-	return Result{url: url, code: resp.StatusCode, status: http.StatusText(resp.StatusCode), time: elapsed}
+func report(w io.Writer, result []Result) {
+	var failed int
+
+	tw := tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
+	for _, r := range result {
+		fmt.Fprintf(tw, "%s\t%s\t%dms\t%s\t\t%s\n", r.Status(), r.CodeText(), r.Duration.Milliseconds(), r.URL, r.Note())
+		if !r.OK() {
+			failed++
+		}
+	}
+	tw.Flush()
+
+	fmt.Printf("\n%d checked, %d ok, %d failed\n", len(result), len(result)-failed, failed)
+}
+
+// -- main --
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "pinger:", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	file := flag.String("f", "", "File with list of urls")
+	workers := flag.Int("workers", 3, "Total workers, default is 3")
+	timeout := flag.Duration("timeout", 3*time.Second, "Max timeout of http request, default is 3s")
+	flag.Parse()
+
+	if *file == "" {
+		flag.Usage()
+		return errors.New("-f file not found!")
+	}
+
+	if *workers < 1 {
+		flag.Usage()
+		return errors.New("-worker minimal 1")
+	}
+
+	url, err := readUrl(*file)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	results := worker(ctx, url, *workers, *timeout)
+	report(os.Stdout, results)
+
+	return nil
 }
