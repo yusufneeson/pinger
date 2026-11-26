@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,8 +17,8 @@ type Result struct {
 	url    string
 	status string
 	code   int
-	time   int64
-	error  string
+	time   time.Duration
+	error  error
 }
 
 type Job struct {
@@ -27,34 +26,7 @@ type Job struct {
 	url string
 }
 
-func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "pinger:", err)
-		os.Exit(1)
-	}
-}
-
-func checkUrl(parentContext context.Context, client *http.Client, url string, timeout time.Duration) Result {
-	ctx, cancel := context.WithTimeout(parentContext, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	start := time.Now()
-	resp, e := client.Do(req)
-	elapsed := time.Since(start)
-	if e != nil {
-		return Result{url: url, status: "FAIL", code: 0, time: elapsed.Milliseconds(), error: e.Error()}
-	}
-
-	defer resp.Body.Close()
-
-	return Result{url: url, code: resp.StatusCode, status: http.StatusText(resp.StatusCode), time: elapsed.Milliseconds()}
-}
-
+// -- I/O --
 func readUrl(path string) ([]string, error) {
 	var url []string
 	f, err := os.Open(path)
@@ -72,29 +44,11 @@ func readUrl(path string) ([]string, error) {
 	return url, scanner.Err()
 }
 
-func worker(ctx context.Context, url []string, workers int, timeout time.Duration) []Result {
-	jobs := make(chan Job)
-	results := make([]Result, len(url))
-
-	client := &http.Client{}
-
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Go(func() {
-			for j := range jobs {
-				results[j.id] = checkUrl(ctx, client, j.url, timeout)
-			}
-		})
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "pinger:", err)
+		os.Exit(1)
 	}
-
-	for i, u := range url {
-		jobs <- Job{i, u}
-	}
-
-	close(jobs)
-	wg.Wait()
-
-	return results
 }
 
 func run() error {
@@ -135,4 +89,50 @@ func run() error {
 	fmt.Println(elapsed)
 
 	return nil
+}
+
+func worker(ctx context.Context, url []string, workers int, timeout time.Duration) []Result {
+	jobs := make(chan Job)
+	results := make([]Result, len(url))
+
+	client := &http.Client{}
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for j := range jobs {
+				results[j.id] = checkUrl(ctx, client, j.url, timeout)
+			}
+		})
+	}
+
+	for i, u := range url {
+		jobs <- Job{i, u}
+	}
+
+	close(jobs)
+	wg.Wait()
+
+	return results
+}
+
+func checkUrl(parentContext context.Context, client *http.Client, url string, timeout time.Duration) Result {
+	ctx, cancel := context.WithTimeout(parentContext, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return Result{url: url, status: "FAIL", error: err}
+	}
+
+	start := time.Now()
+	resp, e := client.Do(req)
+	elapsed := time.Since(start)
+	if e != nil {
+		return Result{url: url, status: "FAIL", time: elapsed, error: e}
+	}
+
+	defer resp.Body.Close()
+
+	return Result{url: url, code: resp.StatusCode, status: http.StatusText(resp.StatusCode), time: elapsed}
 }
