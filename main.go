@@ -56,8 +56,19 @@ func (r Result) Note() string {
 	}
 }
 
-func checkUrl(parentContext context.Context, client *http.Client, url string, timeout time.Duration) Result {
-	ctx, cancel := context.WithTimeout(parentContext, timeout)
+// -- Checker URL --
+
+type Checker interface {
+	Check(parentContext context.Context, url string) Result
+}
+
+type HTTPCheck struct {
+	client  *http.Client
+	timeout time.Duration
+}
+
+func (c HTTPCheck) Check(parentContext context.Context, url string) Result {
+	ctx, cancel := context.WithTimeout(parentContext, c.timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
@@ -66,7 +77,7 @@ func checkUrl(parentContext context.Context, client *http.Client, url string, ti
 	}
 
 	start := time.Now()
-	resp, e := client.Do(req)
+	resp, e := c.client.Do(req)
 	elapsed := time.Since(start)
 	if e != nil {
 		return Result{URL: url, Duration: elapsed, Err: e}
@@ -83,17 +94,15 @@ type Job struct {
 	url string
 }
 
-func worker(ctx context.Context, url []string, workers int, timeout time.Duration) []Result {
+func worker(ctx context.Context, c Checker, url []string, workers int) []Result {
 	jobs := make(chan Job)
 	results := make([]Result, len(url))
-
-	client := &http.Client{}
 
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Go(func() {
 			for j := range jobs {
-				results[j.id] = checkUrl(ctx, client, j.url, timeout)
+				results[j.id] = c.Check(ctx, j.url)
 			}
 		})
 	}
@@ -173,7 +182,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	results := worker(ctx, url, *workers, *timeout)
+	check := HTTPCheck{client: &http.Client{}, timeout: *timeout}
+	results := worker(ctx, check, url, *workers)
 	report(os.Stdout, results)
 
 	return nil
